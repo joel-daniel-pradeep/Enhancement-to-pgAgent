@@ -1,0 +1,49 @@
+//////////////////////////////////////////////////////////////////////////
+//
+// pgAgent - PostgreSQL Tools
+// 
+// Copyright (C) 2002 - 2024, The pgAdmin Development Team
+// This software is released under the PostgreSQL Licence
+//
+// pgaevent.rc - win32 Resources
+//
+//////////////////////////////////////////////////////////////////////////
+
+LANGUAGE 0x9,0x1
+1 11 MSG00001.bin
+
+#include <winver.h>
+
+// Icon (Don't remove the aaa prefix - it makes it the default icon)
+aaaPGAEVENT      ICON         "../include/pgagent.ico"
+
+
+VS_VERSION_INFO VERSIONINFO 
+FILEVERSION    4,2,3,0
+PRODUCTVERSION 4,2,3,0
+FILEOS         VOS__WINDOWS32
+FILETYPE       VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN 
+            VALUE "FileVersion",     "4.2.3"
+            VALUE "File Version",    "4.2.3"
+            VALUE "FileDescription", "pgaevent - pgAgent Event Log Message DLL"
+            VALUE "LegalCopyright",  "(C) 2002 - 2024, The pgAdmin Development Team"
+            VALUE "LegalTrademarks", "This software is released under the PostgreSQL Licence."
+            VALUE "InternalName",    "pgaevent"
+            VALUE "OriginalFilename","pgaevent.dll"
+            VALUE "ProductName",     "pgAgent"
+            VALUE "ProductVersion",  "4.2.3"
+        END
+    END
+    BLOCK "VarFileInfo" 
+    BEGIN 
+        VALUE "Translation", 0x0409, 0x04B0
+    END 
+END 
+
+
+
