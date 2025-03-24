@@ -154,6 +154,56 @@ CREATE TABLE pgagent.pga_job_dependency (
     CONSTRAINT fk_dependent_job FOREIGN KEY (dependent_jobid) REFERENCES pgagent.pga_job(jobid) ON DELETE CASCADE
 );
 
+-- Table to store user roles with specific permissions
+CREATE TABLE pgagent.pga_user_roles (
+    role_id SERIAL PRIMARY KEY,
+    role_name TEXT UNIQUE NOT NULL,
+    can_create BOOLEAN DEFAULT FALSE,
+    can_modify BOOLEAN DEFAULT FALSE,
+    can_delete BOOLEAN DEFAULT FALSE,
+    can_view_logs BOOLEAN DEFAULT FALSE
+);
+
+-- Insert predefined roles with permissions
+INSERT INTO pgagent.pga_user_roles (role_name, can_create, can_modify, can_delete, can_view_logs) VALUES
+('Admin', TRUE, TRUE, TRUE, TRUE),
+('Manager', TRUE, TRUE, FALSE, FALSE),
+('Operator', FALSE, FALSE, FALSE, TRUE);
+
+
+
+CREATE TABLE pgagent.pga_users (
+    user_id SERIAL PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    role_id INTEGER REFERENCES pgagent.pga_user_roles(role_id) ON DELETE SET NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+
+-- Add audit logging table for pgAgent jobs
+CREATE TABLE pgagent.pga_job_audit_log (
+    audit_id          serial               NOT NULL PRIMARY KEY,
+    job_id            int4                 NOT NULL ,
+    operation_type    text                 NOT NULL CHECK (operation_type IN ('CREATE', 'MODIFY', 'DELETE', 'EXECUTE')),
+    operation_time    timestamptz          NOT NULL DEFAULT current_timestamp,
+    operation_user    text                 NOT NULL,
+    old_values        jsonb                NULL,
+    new_values        jsonb                NULL,
+    additional_info   text                 NULL
+) WITHOUT OIDS;
+
+CREATE INDEX pga_job_audit_log_jobid ON pgagent.pga_job_audit_log(job_id);
+CREATE INDEX pga_job_audit_log_operation_time ON pgagent.pga_job_audit_log(operation_time);
+
+COMMENT ON TABLE pgagent.pga_job_audit_log IS 'Audit log for pgAgent job operations';
+COMMENT ON COLUMN pgagent.pga_job_audit_log.operation_type IS 'Type of operation performed (CREATE, MODIFY, DELETE, EXECUTE)';
+COMMENT ON COLUMN pgagent.pga_job_audit_log.old_values IS 'Previous values of modified fields (for MODIFY operations)';
+COMMENT ON COLUMN pgagent.pga_job_audit_log.new_values IS 'New values of modified fields (for MODIFY operations)';
+COMMENT ON COLUMN pgagent.pga_job_audit_log.additional_info IS 'Additional information about the operation';
+
+
 
 CREATE OR REPLACE FUNCTION pgagent.pgagent_schema_version() RETURNS int2 AS '
 BEGIN
@@ -655,6 +705,164 @@ BEGIN
 END;
 ' LANGUAGE 'plpgsql' VOLATILE;
 COMMENT ON FUNCTION pgagent.pga_exception_trigger() IS 'Update the job''s next run time whenever an exception changes';
+
+CREATE OR REPLACE FUNCTION pgagent.assign_role_to_user(p_user_id INT, p_role_id INT)
+RETURNS VOID AS $$
+BEGIN
+    -- Ensure the user exists before assigning a role
+    IF EXISTS (SELECT 1 FROM pgagent.pga_users WHERE user_id = p_user_id) THEN
+        -- Assign the role to the user
+        UPDATE pgagent.pga_users
+        SET role_id = p_role_id
+        WHERE user_id = p_user_id;
+    ELSE
+        RAISE EXCEPTION 'User does not exist, cannot assign role';
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION pgagent.user_has_permission(p_user_id INT, action TEXT)
+RETURNS BOOLEAN AS $$
+DECLARE
+    user_role TEXT;
+BEGIN
+    -- Check if the user exists
+    IF NOT EXISTS (SELECT 1 FROM pgagent.pga_users WHERE user_id = p_user_id) THEN
+        RAISE EXCEPTION 'User with ID % does not exist.', p_user_id;
+    END IF;
+    
+    -- Get the user's role
+    SELECT role_name INTO user_role
+    FROM pgagent.pga_users
+    JOIN pgagent.pga_user_roles ON pga_users.role_id = pga_user_roles.role_id
+    WHERE pga_users.user_id = p_user_id;
+    
+    -- Check if the user has permission for the action
+    IF action = 'create' THEN
+        IF user_role = 'Admin' OR user_role = 'Manager' THEN
+            RETURN TRUE;
+        ELSE
+            RETURN FALSE;
+        END IF;
+    ELSIF action = 'modify' THEN
+        IF user_role = 'Admin' OR user_role = 'Manager' THEN
+            RETURN TRUE;
+        ELSE
+            RETURN FALSE;
+        END IF;
+    ELSIF action = 'delete' THEN
+        IF user_role = 'Admin' THEN
+            RETURN TRUE;
+        ELSE
+            RETURN FALSE;
+        END IF;
+    ELSIF action = 'view_logs' THEN
+        IF user_role = 'Admin' OR user_role = 'Operator' THEN
+            RETURN TRUE;
+        ELSE
+            RETURN FALSE;
+        END IF;
+    ELSE
+        RETURN FALSE; -- Default to FALSE for unrecognized actions
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+-- Function to log job operations
+CREATE OR REPLACE FUNCTION pgagent.pga_log_job_operation(
+    p_job_id integer,
+    p_operation_type text,
+    p_operation_user text,
+    p_old_values jsonb,
+    p_new_values jsonb,
+    p_additional_info text DEFAULT NULL
+) RETURNS void AS $$
+BEGIN
+    INSERT INTO pgagent.pga_job_audit_log (
+        job_id,
+        operation_type,
+        operation_user,
+        old_values,
+        new_values,
+        additional_info
+    ) VALUES (
+        p_job_id,
+        p_operation_type,
+        p_operation_user,
+        p_old_values,
+        p_new_values,
+        p_additional_info
+    );
+END;
+$$ LANGUAGE plpgsql;
+-- Trigger function for job modifications
+CREATE OR REPLACE FUNCTION pgagent.pga_job_audit_trigger()
+RETURNS trigger AS $$
+DECLARE
+    significant_change boolean;
+BEGIN
+    significant_change := false;
+    
+    IF TG_OP = 'INSERT' THEN
+        -- Always log job creation
+        PERFORM pgagent.pga_log_job_operation(
+            NEW.jobid,
+            'CREATE',
+            current_user,
+            NULL,
+            row_to_json(NEW)::jsonb
+        );
+    ELSIF TG_OP = 'UPDATE' THEN
+        -- Only log significant changes
+        IF (OLD.jobname != NEW.jobname) OR
+           (OLD.jobdesc != NEW.jobdesc) OR
+           (OLD.jobhostagent != NEW.jobhostagent) OR
+           (OLD.jobenabled != NEW.jobenabled) OR
+           (OLD.jobjclid != NEW.jobjclid) THEN
+            significant_change := true;
+        END IF;
+
+        -- Don't log changes to jobagentid, joblastrun, jobnextrun as they are internal state changes
+        IF significant_change THEN
+            PERFORM pgagent.pga_log_job_operation(
+                NEW.jobid,
+                'MODIFY',
+                current_user,
+                row_to_json(OLD)::jsonb,
+                row_to_json(NEW)::jsonb
+            );
+        END IF;
+    ELSIF TG_OP = 'DELETE' THEN
+        -- Log the deletion before the job is actually deleted
+        PERFORM pgagent.pga_log_job_operation(
+            OLD.jobid,
+            'DELETE',
+            current_user,
+            row_to_json(OLD)::jsonb,
+            NULL,
+            'Job deleted by user ' || current_user
+        );
+        -- Allow the deletion to proceed
+        RETURN OLD;
+    END IF;
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create triggers for job table
+DROP TRIGGER IF EXISTS pga_job_audit_trigger ON pgagent.pga_job;
+CREATE TRIGGER pga_job_audit_trigger
+    AFTER INSERT OR UPDATE ON pgagent.pga_job
+    FOR EACH ROW
+    EXECUTE FUNCTION pgagent.pga_job_audit_trigger();
+
+-- Create separate trigger for DELETE operations
+DROP TRIGGER IF EXISTS pga_job_audit_delete_trigger ON pgagent.pga_job;
+CREATE TRIGGER pga_job_audit_delete_trigger
+    BEFORE DELETE ON pgagent.pga_job
+    FOR EACH ROW
+    EXECUTE FUNCTION pgagent.pga_job_audit_trigger();
+
 
 
 

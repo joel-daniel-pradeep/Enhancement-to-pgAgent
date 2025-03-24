@@ -34,41 +34,61 @@ Job::Job(DBconn *conn, const std::string &jid)
 
 	if (rc == 1)
 	{
-		DBresultPtr id = m_threadConn->Execute(
-			"SELECT nextval('pgagent.pga_joblog_jlgid_seq') AS id"
-		);
-		if (id)
-		{
-			m_logid = id->GetString("id");
+		// Get current user
+		std::string currentUser = m_threadConn->ExecuteScalar("SELECT current_user");
 
-			DBresultPtr res = m_threadConn->Execute(
-				"INSERT INTO pgagent.pga_joblog(jlgid, jlgjobid, jlgstatus) "
-				"VALUES (" + m_logid + ", " + m_jobid + ", 'r')");
-			if (res)
-			{
-				m_status = "r";
-			}
+		// Get job state before update
+		DBresultPtr oldState = m_threadConn->Execute(
+			"SELECT row_to_json(j)::jsonb as job_state FROM pgagent.pga_job j WHERE j.jobid=" + m_jobid
+		);
+		std::string jobState = oldState ? m_threadConn->qtDbString(oldState->GetString("job_state")) : "NULL";
+
+		// Log job execution start
+		std::string auditQuery = "SELECT pgagent.pga_log_job_operation(" + m_jobid + 
+			", 'EXECUTE', " + m_threadConn->qtDbString(currentUser) + 
+			", " + jobState + ", NULL, 'Job execution started')";
+		m_threadConn->ExecuteVoid(auditQuery);
+
+		// Retrieve job log ID
+		DBresultPtr id = m_threadConn->Execute(
+			"INSERT INTO pgagent.pga_joblog(jlgjobid, jlgstatus) VALUES (" + m_jobid + ", 'r') RETURNING jlgid"
+		);
+		if (id && id->RowsAffected() > 0)
+		{
+			m_logid = id->GetString("jlgid");
+			m_status = "r";
 		}
 	}
 }
-
 
 Job::~Job()
 {
 	if (!m_status.empty())
 	{
-		m_threadConn->ExecuteVoid(
-			"UPDATE pgagent.pga_joblog "
-			"   SET jlgstatus='" + m_status + "', jlgduration=now() - jlgstart " +
-			" WHERE jlgid=" + m_logid + ";\n" +
+		// Get current user
+		std::string currentUser = m_threadConn->ExecuteScalar("SELECT current_user");
 
-			"UPDATE pgagent.pga_job " +
-			"   SET jobagentid=NULL, jobnextrun=NULL " +
-			" WHERE jobid=" + m_jobid
+		// Get job state before update
+		DBresultPtr oldState = m_threadConn->Execute(
+			"SELECT row_to_json(j)::jsonb as job_state FROM pgagent.pga_job j WHERE j.jobid=" + m_jobid
+		);
+		std::string jobState = oldState ? m_threadConn->qtDbString(oldState->GetString("job_state")) : "NULL";
+
+		// Log job execution completion
+		std::string status_info = "Job execution completed with status: " + m_status;
+		std::string auditQuery = "SELECT pgagent.pga_log_job_operation(" + m_jobid + 
+			", 'EXECUTE', " + m_threadConn->qtDbString(currentUser) + 
+			", " + jobState + ", NULL, '" + status_info + "')";
+		m_threadConn->ExecuteVoid(auditQuery);
+
+		// Update job log and job table
+		m_threadConn->ExecuteVoid(
+			"UPDATE pgagent.pga_joblog SET jlgstatus='" + m_status + "', jlgduration=now() - jlgstart WHERE jlgid=" + m_logid + ";\n" +
+			"UPDATE pgagent.pga_job SET jobagentid=NULL, jobnextrun=NULL WHERE jobid=" + m_jobid
 		);
 	}
-	m_threadConn->Return();
 
+	m_threadConn->Return();
 	LogMessage("Completed job: " + m_jobid, LOG_DEBUG);
 }
 
