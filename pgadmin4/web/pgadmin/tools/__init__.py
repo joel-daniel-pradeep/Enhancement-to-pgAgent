@@ -66,6 +66,12 @@ class ToolsModule(PgAdminModule):
 
         from .user_management import blueprint as module
         app.register_blueprint(module)
+        
+        # from .pgagent_audit import blueprint as module
+        # app.register_blueprint(module)
+        
+        # from .pgagent_audit import audit_module
+        # app.register_blueprint(audit_module)
 
     def get_exposed_url_endpoints(self):
         """

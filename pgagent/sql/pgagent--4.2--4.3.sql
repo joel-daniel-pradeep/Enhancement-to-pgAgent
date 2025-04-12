@@ -1,7 +1,7 @@
 -- Add audit logging table for pgAgent jobs
 CREATE TABLE pgagent.pga_job_audit_log (
     audit_id          serial               NOT NULL PRIMARY KEY,
-    job_id            int4                 NOT NULL REFERENCES pgagent.pga_job (jobid) ON DELETE NO ACTION,
+    job_id            int4                 NOT NULL ,
     operation_type    text                 NOT NULL CHECK (operation_type IN ('CREATE', 'MODIFY', 'DELETE', 'EXECUTE')),
     operation_time    timestamptz          NOT NULL DEFAULT current_timestamp,
     operation_user    text                 NOT NULL,
@@ -65,7 +65,7 @@ BEGIN
             row_to_json(NEW)::jsonb,
             NULL
         );
-        RETURN NEW;
+        RETURN NULL;
     ELSIF TG_OP = 'UPDATE' THEN
         -- Only log significant changes
         IF (OLD.jobname != NEW.jobname) OR
@@ -87,9 +87,9 @@ BEGIN
                 NULL
             );
         END IF;
-        RETURN NEW;
+        RETURN NULL;
     ELSIF TG_OP = 'DELETE' THEN
-        -- Log the deletion before the job is actually deleted
+        -- Log the deletion after the job is actually deleted
         PERFORM pgagent.pga_log_job_operation(
             OLD.jobid,
             'DELETE',
@@ -98,7 +98,7 @@ BEGIN
             NULL,
             'Job deleted by user ' || current_user
         );
-        RETURN OLD;
+        RETURN NULL;
     END IF;
     RETURN NULL;
 END;
@@ -107,7 +107,7 @@ $$ LANGUAGE plpgsql;
 -- Create trigger for job table
 DROP TRIGGER IF EXISTS pga_job_audit_trigger ON pgagent.pga_job;
 CREATE TRIGGER pga_job_audit_trigger
-    BEFORE INSERT OR UPDATE OR DELETE ON pgagent.pga_job
+    AFTER INSERT OR UPDATE OR DELETE ON pgagent.pga_job
     FOR EACH ROW
     EXECUTE FUNCTION pgagent.pga_job_audit_trigger();
 

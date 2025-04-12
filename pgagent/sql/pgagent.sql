@@ -849,19 +849,9 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Create triggers for job table
-DROP TRIGGER IF EXISTS pga_job_audit_trigger ON pgagent.pga_job;
-CREATE TRIGGER pga_job_audit_trigger
-    AFTER INSERT OR UPDATE ON pgagent.pga_job
-    FOR EACH ROW
-    EXECUTE FUNCTION pgagent.pga_job_audit_trigger();
 
--- Create separate trigger for DELETE operations
-DROP TRIGGER IF EXISTS pga_job_audit_delete_trigger ON pgagent.pga_job;
-CREATE TRIGGER pga_job_audit_delete_trigger
-    BEFORE DELETE ON pgagent.pga_job
-    FOR EACH ROW
-    EXECUTE FUNCTION pgagent.pga_job_audit_trigger();
+
+
 
 
 

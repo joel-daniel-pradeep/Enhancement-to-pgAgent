@@ -150,7 +150,8 @@ class JobView(PGChildNodeView):
         'run_now': [{'put': 'run_now'}],
         'classes': [{}, {'get': 'job_classes'}],
         'children': [{'get': 'children'}],
-        'stats': [{'get': 'statistics'}]
+        'stats': [{'get': 'statistics'}],
+        'audit_log': [{'get': 'audit_log'}]
     })
 
     def check_precondition(f):
@@ -613,6 +614,34 @@ SELECT EXISTS(
                     self.conn, self.template_path)
                 if not status:
                     internal_server_error(errormsg=res)
+
+    @check_precondition
+    def audit_log(self, gid, sid, jid):
+        """
+        Returns the audit log entries for the specified job.
+        """
+        # Get row threshold preference
+        pref = Preferences.module('browser')
+        rows_threshold = pref.preference(
+            'pgagent_row_threshold'
+        )
+
+        status, res = self.conn.execute_dict(
+            render_template(
+                "/".join([self.template_path, 'audit_log.sql']),
+                jid=jid,
+                conn=self.conn,
+                rows_threshold=rows_threshold.get()
+            )
+        )
+
+        if not status:
+            return internal_server_error(errormsg=res)
+
+        return ajax_response(
+            response=res,
+            status=200
+        )
 
 
 JobView.register_node_view(blueprint)
