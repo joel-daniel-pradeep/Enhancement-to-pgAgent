@@ -290,6 +290,34 @@ SELECT EXISTS(
                         index += 1
 
             res['jschedules'] = rset['rows']
+            
+            # Get audit logs for the job
+            status, rset = self.conn.execute_dict(
+                render_template(
+                    "/".join([self.template_path, 'audit_log.sql']),
+                    jid=jid, conn=self.conn
+                )
+            )
+            if not status:
+                return internal_server_error(errormsg=rset)
+                
+            # Process JSON fields to ensure they're properly formatted
+            for row in rset['rows']:
+                if 'old_values' in row and row['old_values']:
+                    if isinstance(row['old_values'], str):
+                        try:
+                            row['old_values'] = json.loads(row['old_values'])
+                        except ValueError:
+                            pass
+                            
+                if 'new_values' in row and row['new_values']:
+                    if isinstance(row['new_values'], str):
+                        try:
+                            row['new_values'] = json.loads(row['new_values'])
+                        except ValueError:
+                            pass
+                            
+            res['audit_logs'] = rset['rows']
         else:
             res = rset['rows']
 
@@ -620,23 +648,85 @@ SELECT EXISTS(
         """
         Returns the audit log entries for the specified job.
         """
+        # First check if the audit log table exists
+        check_sql = """
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+            WHERE table_schema = 'pgagent' 
+            AND table_name = 'pga_job_audit_log'
+        ) as table_exists;
+        """
+        status, check_res = self.conn.execute_dict(check_sql)
+        
+        if not status:
+            return internal_server_error(errormsg=check_res)
+            
+        if len(check_res['rows']) == 0 or not check_res['rows'][0]['table_exists']:
+            # Table doesn't exist, return empty result
+            return ajax_response(
+                response={'rows': [], 'msg': 'Audit log table does not exist. Please upgrade pgAgent to version 4.3 or later.'},
+                status=200
+            )
+        
         # Get row threshold preference
         pref = Preferences.module('browser')
         rows_threshold = pref.preference(
             'pgagent_row_threshold'
         )
+        
+        # Get filter parameters from request
+        operation_types = request.args.get('operation_types', None)
+        date_from = request.args.get('date_from', None)
+        date_to = request.args.get('date_to', None)
+        
+        # Get sorting parameters
+        sort_column = request.args.get('sort', 'operation_time')
+        sort_order = request.args.get('sort_order', 'desc')
+        
+        # Format operation types for SQL query if provided
+        operation_types_sql = None
+        if operation_types:
+            op_types = operation_types.split(',')
+            # Format as SQL string list: 'CREATE', 'MODIFY', etc.
+            operation_types_sql = "'" + "', '".join(op_types) + "'"
 
+        # Table exists, proceed with query
         status, res = self.conn.execute_dict(
             render_template(
                 "/".join([self.template_path, 'audit_log.sql']),
                 jid=jid,
                 conn=self.conn,
+                operation_types=operation_types_sql,
+                date_from=date_from,
+                date_to=date_to,
+                sort_column=sort_column,
+                sort_order=sort_order,
                 rows_threshold=rows_threshold.get()
             )
         )
 
         if not status:
             return internal_server_error(errormsg=res)
+        
+        # Debug: Log the number of rows returned and filter parameters
+        filter_info = f"Filters: operation_types={operation_types}, date_from={date_from}, date_to={date_to}"
+        print(f"Audit log query for job {jid} returned {len(res['rows'])} rows. {filter_info}")
+            
+        # Process JSON fields to ensure they're properly formatted
+        for row in res['rows']:
+            if 'old_values' in row and row['old_values']:
+                if isinstance(row['old_values'], str):
+                    try:
+                        row['old_values'] = json.loads(row['old_values'])
+                    except ValueError:
+                        pass
+                        
+            if 'new_values' in row and row['new_values']:
+                if isinstance(row['new_values'], str):
+                    try:
+                        row['new_values'] = json.loads(row['new_values'])
+                    except ValueError:
+                        pass
 
         return ajax_response(
             response=res,
